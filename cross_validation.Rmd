@@ -1,0 +1,137 @@
+---
+title: "cross_validation"
+author: "Jiayi Shi"
+date: "2022-11-15"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(modelr)
+library(mgcv)
+
+knitr::opts_chunk$set(
+  fig.width = 6,
+  fig.asp = .6,
+  out.width = "90%"
+)
+
+theme_set(theme_minimal() + theme(legend.position = "bottom"))
+
+options(
+  ggplot2.continuous.colour = "viridis",
+  ggplot2.continuous.fill = "viridis"
+)
+
+scale_colour_discrete = scale_colour_viridis_d
+scale_fill_discrete = scale_fill_viridis_d
+
+set.seed(1)
+```
+
+## Model selection
+nested models: anova()
+non-nested models: AIC/BIC/etc
+balance bwt goodness of fit and complexity
+
+## CV by hand
+build model on training dataset and evaluate using RMSE on test dataset
+
+Generates data under a non-linear model
+
+```{r}
+nonlin_df = 
+  tibble(
+    id = 1:100,
+    x = runif(100, 0, 1),
+    y = 1 - 10 * (x - .3) ^ 2 + rnorm(100, 0, .3)
+  )
+
+nonlin_df %>% 
+  ggplot(aes(x = x, y = y)) + 
+  geom_point()
+```
+
+Split into training and test sets using:
+
+df %>% `sample_n(numebr_in_train)`/`slice_sample(n = number_in_train)`: select number_in_train observations from the original dataset `df` randomly.
+
+and
+
+`anti_join(x,y)`: return all rows from x without a match in y.
+
+```{r}
+train_df = nonlin_df %>% slice_sample(prop = 0.8)
+test_df = anti_join(nonlin_df, train_df)
+# test_df = anti_join(nonlin_df, train_df, by = "id")
+
+ggplot(train_df, aes(x = x, y = y)) + 
+  geom_point() + 
+  geom_point(data = test_df, color = "red")
+```
+
+`mgcv::gam()`: Generalized additive models
+* additive models e.g. polynomial models
+
+Build three models with different compolexity (non-nested)
+```{r}
+linear_mod = lm(y ~ x, data = train_df)
+smooth_mod = mgcv::gam(y ~ s(x), data = train_df)
+wiggly_mod = mgcv::gam(y ~ s(x, k = 30), sp = 10e-6, data = train_df)
+```
+
+`add_predictions(data, model)`: Add predictions to a data frame
+`add_residuals(data, model)`: Add residuals to a data frame
+
+```{r}
+train_df %>% 
+  add_predictions(linear_mod) %>% # add a column "pred"
+  ggplot(aes(x = x, y = y)) + geom_point() + 
+  geom_line(aes(y = pred), color = "red")
+```
+
+`modelr::gather_predictions`: add predictions for several models to a data frame and then “pivoting” so the result is a tidy, “long” dataset that’s easily plottable. (add two columns: "model" and "pred")
+
+```{r}
+train_df %>% 
+  gather_predictions(linear_mod, smooth_mod, wiggly_mod) %>% 
+  mutate(model = fct_inorder(model)) %>% 
+  ggplot(aes(x = x, y = y)) + 
+  geom_point() + 
+  geom_line(aes(y = pred), color = "red") + 
+  facet_wrap(~model)
+```
+
+`rmse(model, data)` data used to get the predictions and then calculate rmse
+```{r}
+rmse(linear_mod, test_df)
+rmse(smooth_mod, test_df)
+rmse(wiggly_mod, test_df)
+```
+
+## CV using `modelr`
+
+```{r}
+cv_df = 
+  crossv_mc(nonlin_df, 100) # 100: number of splits => train(list), test(list), id
+
+cv_df %>% pull(train) %>% .[[1]] %>% as_tibble # get the training set from the first split (id,x,y)
+```
+
+
+```{r}
+cv_df = 
+  cv_df %>% 
+  mutate(
+    train = map(train, as_tibble),
+    test = map(test, as_tibble)) %>% # convert resample to tibble
+  mutate(
+    linear_mod  = map(.x = train, ~lm(y ~ x, data = .x)),
+    smooth_mod  = map(.x = train, ~mgcv::gam(y ~ s(x), data = .x)),
+    wiggly_mod  = map(.x = train, ~gam(y ~ s(x, k = 30), sp = 10e-6, data = .x))) %>% 
+  mutate(
+    rmse_linear = map2_dbl(linear_mod, test, ~rmse(model = .x, data = .y)),
+    rmse_smooth = map2_dbl(smooth_mod, test, ~rmse(model = .x, data = .y)),
+    rmse_wiggly = map2_dbl(wiggly_mod, test, ~rmse(model = .x, data = .y)))
+```
+
