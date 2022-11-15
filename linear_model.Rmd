@@ -1,0 +1,131 @@
+---
+title: "linear_model"
+author: "Jiayi Shi"
+date: "2022-11-10"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(p8105.datasets)
+library(broom)
+
+set.seed(1)
+```
+
+lm(formula, data): linear model
+glm(): generalized linear model
+
+```{r}
+data("nyc_airbnb")
+
+nyc_airbnb = 
+  nyc_airbnb %>% 
+  mutate(stars = review_scores_location / 2) %>% 
+  rename(
+    borough = neighbourhood_group,
+    neighborhood = neighbourhood) %>% 
+  filter(borough != "Staten Island") %>% 
+  select(price, stars, borough, neighborhood, room_type) %>% 
+  mutate(
+    borough = fct_infreq(borough),
+    room_type = fct_infreq(room_type)
+      )
+```
+
+fit model:
+
+outcome ~ 1: intercept-only model.
+
+outcome ~ 0 + ...: model with no intercept.
+
+outcome ~ .: model using all available predictors.
+
+```{r}
+fit = lm(price ~ stars + borough, data = nyc_airbnb)
+```
+
+categorical (factor) covariates: set reference for factor levels
+
+```{r}
+fit = 
+  nyc_airbnb %>% 
+  mutate( # change reference category
+    borough = fct_infreq(borough) # set most common category as reference (most common category set as 1 by R - reference)
+    ) %>% 
+  lm(price ~ stars + borough, data = .)
+```
+
+```{r}
+summary(fit)
+summary(fit)$coef
+coef(fit)
+fitted.values(fit)
+```
+
+```{r}
+fit %>% 
+  broom::glance()
+```
+
+```{r}
+fit %>% 
+  broom::tidy() %>% 
+  mutate(term = str_replace(term, "borough", "borough: ")) %>% 
+  select(term, estimate, p.value) %>% 
+  knitr::kable(digits = 3)
+```
+
+## Diagnostics
+
+```{r}
+modelr::add_residuals(nyc_airbnb, fit) %>%
+  ggplot(aes(x = stars, y = resid)) +
+  geom_point()
+
+nyc_airbnb %>% 
+  modelr::add_residuals(fit) %>% 
+  ggplot(aes(x = borough, y = resid)) + 
+  geom_violin() +
+  ylim(-200, 250)
+
+modelr::add_predictions(nyc_airbnb, fit)
+```
+
+## Hypothesis testing
+
+```{r}
+fit_null = lm(price ~ stars, data = nyc_airbnb)
+fit_alt = lm(price ~ stars + borough, data = nyc_airbnb)
+
+anova(fit_null, fit_alt) %>% # ANOVA works for nested models only
+  broom::tidy() # small p-value, should include borough variable
+```
+
+## Room type by borough
+
+Interactions:
+
+```{r}
+nyc_airbnb %>% 
+  lm(price ~ stars + room_type * borough, data = .) %>% 
+  broom::tidy() 
+```
+
+Fit borough-specific models associating price with rating and room type:
+
+```{r}
+nyc_airbnb %>% 
+nest(df = -borough) %>% # nest within boroughs / nest everything except brough
+mutate(
+  models = map(.x = df, ~lm(price ~ stars + room_type, data = .x)),
+  results = map(models, broom::tidy)) %>% 
+select(-df, -models) %>% 
+unnest(results) %>% 
+select(borough, term, estimate) %>% 
+mutate(term = fct_inorder(term)) %>% 
+pivot_wider(
+  names_from = term, values_from = estimate) %>% 
+knitr::kable(digits = 3)
+```
+
